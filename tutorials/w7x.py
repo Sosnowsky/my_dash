@@ -11,6 +11,7 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 import pandas as pd
 from plotly_resampler import FigureResampler
+from trace_updater import TraceUpdater
 
 import plotly.figure_factory as ff
 import plotly.graph_objects as go
@@ -70,7 +71,8 @@ app.layout = html.Div(
         dcc.Input(id="scale", type="number", placeholder="", value=5e-6, style={'marginRight': '10px'}),
         html.Div([
             dcc.Graph(id="quiver", figure=fig, style={'width': '49vw', 'height': '49vw', 'display': 'inline-block'}),
-            dcc.Graph(id="ccf", figure={}, style={'width': '49vw', 'height': '49vw', 'display': 'inline-block'})])
+            dcc.Graph(id="ccf", figure={}, style={'width': '49vw', 'height': '49vw', 'display': 'inline-block'}),
+            TraceUpdater(id="trace-updater", gdID="ccf")])
     ]
 )
 
@@ -110,7 +112,8 @@ def update_scale(scale):
     return fig_update
 
 
-ccf_fig = FigureResampler(make_subplots(rows=2, cols=1))
+#ccf_fig = FigureResampler(make_subplots(rows=2, cols=1))
+ccf_fig = FigureResampler()
 
 
 @callback(
@@ -139,15 +142,19 @@ def display_hover_data(hd, figure):
     s2 = ds.sel(x=x2, y=y2, time=slice(t_min, t_max))["frames"].values
     ccf_times, ccf = fppa.corr_fun(s1, s2, 5e-7)
 
-    ccf_fig.add_trace(go.Scattergl(name="{} {}".format(x2, y2)), hf_x=ccf_times, hf_y=ccf, row=1, col=1)
+    ccf_fig.add_trace(go.Scattergl(name="{} {}".format(x2, y2)), hf_x=ccf_times, hf_y=ccf)
     #ccf_fig.add_trace(get_trace_for_points(i, j, i-1, j), row=1, col=1)
-    ccf_fig.add_trace(get_trace_for_points(i, j, i+1, j), row=1, col=1)
-    ccf_fig.add_trace(get_trace_for_points(i, j, i, j+1), row=1, col=1)
-    ccf_fig.add_trace(get_trace_for_points(i, j, i, j-1), row=1, col=1)
-    ccf_fig.add_trace(get_trace_for_points(i, j, i, j), row=2, col=1)
+    # ccf_fig.add_trace(get_trace_for_points(i, j, i+1, j), row=1, col=1)
+    # ccf_fig.add_trace(get_trace_for_points(i, j, i, j+1), row=1, col=1)
+    # ccf_fig.add_trace(get_trace_for_points(i, j, i, j-1), row=1, col=1)
+    # ccf_fig.add_trace(get_trace_for_points(i, j, i, j), row=2, col=1)
     # ccf_fig.update_xaxes(range=[-5e-3, 5e-3])
     return ccf_fig
 
+
+ccf_fig.register_update_graph_callback(
+    app=app, graph_id="ccf", trace_updater_id="trace-updater"
+)
 
 if __name__ == "__main__":
     # app.run(debug=True)
