@@ -86,7 +86,6 @@ app.layout = html.Div(
 def update_output(n_clicks, figure):
     t_min, t_max = figure["layout"]["yaxis"]["range"]
 
-    print("lol")
     return update_scale(5e-6)
 
 
@@ -112,7 +111,6 @@ def update_scale(scale):
     return fig_update
 
 
-#ccf_fig = FigureResampler(make_subplots(rows=2, cols=1))
 ccf_fig = FigureResampler()
 
 
@@ -124,31 +122,27 @@ ccf_fig = FigureResampler()
 )
 def display_hover_data(hd, figure):
     global ccf_fig
+    ccf_fig.data = []
     i, j = [int(s) for s in hd['points'][0]['text'].split(' ')]
     t_min, t_max = figure["layout"]["yaxis"]["range"]
     print("CCF for pixel {} {}".format(i, j))
 
-    def get_trace_for_points(x1, y1, x2, y2):
+    def plot_trace(x1, y1, x2, y2):
+        name = "{} {}".format(x2, y2)
         s1 = ds.sel(x=x1, y=y1, time=slice(t_min, t_max))["frames"].values
         s2 = ds.sel(x=x2, y=y2, time=slice(t_min, t_max))["frames"].values
         ccf_times, ccf = fppa.corr_fun(s1, s2, 5e-7)
-        return go.Scatter(x=ccf_times, y=ccf, mode="lines", name="{} {}".format(x2, y2))
-    #subplot_titles = ["", "{} {}".format(i, j+1), "",
-    #                  "{} {}".format(i-1, j), "", "{} {}".format(i+1, j),
-    #                  "", "{} {}".format(i, j-1), ""]
+        is_acf = (x1, y1) == (x2, y2)
+        if is_acf:
+            name = "acf"
 
-    x1, y1, x2, y2 = i, j, i-1, j
-    s1 = ds.sel(x=x1, y=y1, time=slice(t_min, t_max))["frames"].values
-    s2 = ds.sel(x=x2, y=y2, time=slice(t_min, t_max))["frames"].values
-    ccf_times, ccf = fppa.corr_fun(s1, s2, 5e-7)
+        ccf_fig.add_trace(go.Scattergl(name=name, visible='legendonly'), hf_x=ccf_times, hf_y=ccf)
 
-    ccf_fig.add_trace(go.Scattergl(name="{} {}".format(x2, y2)), hf_x=ccf_times, hf_y=ccf)
-    #ccf_fig.add_trace(get_trace_for_points(i, j, i-1, j), row=1, col=1)
-    # ccf_fig.add_trace(get_trace_for_points(i, j, i+1, j), row=1, col=1)
-    # ccf_fig.add_trace(get_trace_for_points(i, j, i, j+1), row=1, col=1)
-    # ccf_fig.add_trace(get_trace_for_points(i, j, i, j-1), row=1, col=1)
-    # ccf_fig.add_trace(get_trace_for_points(i, j, i, j), row=2, col=1)
-    # ccf_fig.update_xaxes(range=[-5e-3, 5e-3])
+    plot_trace(i, j, i-1, j)
+    plot_trace(i, j, i+1, j)
+    plot_trace(i, j, i, j-1)
+    plot_trace(i, j, i, j+1)
+    plot_trace(i, j, i, j)
     return ccf_fig
 
 
