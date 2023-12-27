@@ -2,6 +2,7 @@ import numpy as np
 import fppanalysis as fppa
 import h5py
 import xarray as xr
+import plotly.graph_objects as go
 
 
 def vector_rotation(vector,beta):
@@ -117,3 +118,30 @@ def run_norm_ds(ds, radius):
     )
 
     return ds_normalized
+
+
+def add_pixels(ds, fig):
+    radial_pos, pol_pos = ds.R.values, ds.Z.values
+
+    def is_dead(x):
+        return len(x) == 0 or np.isnan(x[0])
+
+    dead_pixels = [is_dead(ds.sel(x=i, y=j)["frames"].values) for j in range(ds.dims['y']) for i in range(ds.dims['x'])]
+    alive_pixels = np.invert(dead_pixels)
+    texts = np.array(["{} {}".format(y, x) for x in range(0, radial_pos.shape[0]) for y in range(0, radial_pos.shape[1])])
+    fig.add_trace(go.Scatter(
+        x=radial_pos.flatten()[alive_pixels],
+        y=pol_pos.flatten()[alive_pixels],
+        mode="markers",
+        text=texts[alive_pixels],
+        marker_size=5,
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=radial_pos.flatten()[dead_pixels],
+        y=pol_pos.flatten()[dead_pixels],
+        mode="markers",
+        text=texts[dead_pixels],
+        marker_size=5,
+        marker_symbol="x"
+    ))
