@@ -1,6 +1,7 @@
 import json
 
 import numpy as np
+from scipy import signal as ss
 import velocity_estimation as ve
 import xarray as xr
 import h5py
@@ -26,6 +27,7 @@ z_arr, r_arr, pol_arr, rad_arr = rad_pol_positions(rad_pol_filename)
 ds = xr.open_dataset(filename)
 # ds = ds.sel(time=slice(5, 20))
 ds = run_norm_ds(ds, 1000)
+dt = 5e-7
 
 
 def get_velocity_field(data, _t_min, _t_max):
@@ -55,6 +57,7 @@ fig_raw = FigureResampler()
 fig_raw.update_layout(autosize=False)
 
 app = Dash(__name__)
+square_style = {'width': '49vw', 'height': '49vw', 'display': 'inline-block'}
 
 col_indxs = range(ds.dims['x'])
 app.layout = html.Div(
@@ -67,13 +70,15 @@ app.layout = html.Div(
         ]),
         dcc.Input(id="scale", type="number", placeholder="", value=5e-6, style={'marginRight': '10px'}),
         html.Div([
-            dcc.Graph(id="quiver", figure=fig, style={'width': '49vw', 'height': '49vw', 'display': 'inline-block'}),
-            dcc.Graph(id="ccf", figure={}, style={'width': '49vw', 'height': '49vw', 'display': 'inline-block'}),
+            dcc.Graph(id="quiver", figure=fig, style=square_style),
+            dcc.Graph(id="ccf", figure={}, style=square_style),
             TraceUpdater(id="trace-updater", gdID="ccf")]),
         html.Div([
             dcc.Markdown("""**Selection Data**"""),
             html.Pre(id='selected_data'),
         ], className='three columns'),
+        dcc.Dropdown(["none", "PDF", "PSD"], "none", id="others_plot"),
+        dcc.Graph(id="others", figure={}, style=square_style),
     ]
 )
 
@@ -123,10 +128,13 @@ def get_indexes(text):
     prevent_initial_call=True,
 )
 def pixel_selection(data):
+    if data is None:
+        return []
+
     texts = [p["text"] for p in data["points"]]
     indexes = np.array(list(map(lambda t: [int(s) for s in t.split(" ")], texts)))
     print("indexes are {}".format(indexes))
-    return indexes
+    return " ".join(map(lambda t: "[ " + t + " ]", texts))
     # return json.dumps(indexes, indent=2)
 
 
@@ -165,6 +173,48 @@ def display_hover_data(hd, figure):
     return ccf_fig
 
 
+@callback(
+    Output("others", "figure"),
+    Input("others_plot", "value"),
+    State("quiver", "selectedData"),
+    State('raw', 'figure'),
+    prevent_initial_call=True
+)
+def plot_others(plot, sd, raw_fig):
+    t_min, t_max = raw_fig["layout"]["xaxis"]["range"]
+    texts = [p["text"] for p in sd["points"]]
+    indexes = np.array(list(map(lambda t: [int(s) for s in t.split(" ")], texts)))
+    new_fig = go.Figure()
+
+    if plot == "PDF":
+        new_fig.update_yaxes(type='log')
+        for pixel in indexes:
+            signal = ds.sel(x=pixel[0], y=pixel[1], time=slice(t_min, t_max))["frames"].values
+            if is_dead(signal):
+                continue
+            hist, bin_edges = np.histogram(signal, bins=50, density=True)
+            mids = (bin_edges[:-1] + bin_edges[1:]) / 2
+
+            label = "{} {}".format(pixel[0], pixel[1])
+            new_fig.add_trace(go.Scatter(x=mids, y=hist, name=label))
+
+    if plot == "PSD":
+        new_fig.update_yaxes(type='log')
+        new_fig.update_xaxes(type='log')
+        for pixel in indexes:
+            signal = ds.sel(x=pixel[0], y=pixel[1], time=slice(t_min, t_max))["frames"].values
+            if is_dead(signal):
+                continue
+
+            freq, psd = ss.welch(signal, fs=1/dt, nperseg=10**4)
+            freq = 2 * np.pi * freq
+
+            label = "{} {}".format(pixel[0], pixel[1])
+            new_fig.add_trace(go.Scatter(x=freq, y=psd, name=label))
+
+    return new_fig
+
+
 ccf_fig.register_update_graph_callback(
     app=app, graph_id="ccf", trace_updater_id="trace-updater"
 )
@@ -174,5 +224,5 @@ fig_raw.register_update_graph_callback(
 )
 
 if __name__ == "__main__":
-    # app.run(debug=True)
-    app.run()
+    app.run(debug=True)
+    # app.run()
