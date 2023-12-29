@@ -26,7 +26,6 @@ z_arr, r_arr, pol_arr, rad_arr = rad_pol_positions(rad_pol_filename)
 # ds = create_xarray_from_hdf5(filename, rad_arr, pol_arr)
 ds = xr.open_dataset(filename)
 # ds = ds.sel(time=slice(5, 20))
-ds = run_norm_ds(ds, 1000)
 dt = 5e-7
 
 
@@ -45,11 +44,16 @@ def get_velocity_field(data, _t_min, _t_max):
 
 R, Z = ds.R.values, ds.Z.values
 
-fig = ff.create_quiver(R, Z, np.zeros(R.shape), np.zeros(R.shape),
-                       scale=5e-6,
-                       name='quiver',
-                       line_width=1,
-                       hovertemplate="")
+fig = ff.create_quiver(
+    R,
+    Z,
+    np.zeros(R.shape),
+    np.zeros(R.shape),
+    scale=5e-6,
+    name="quiver",
+    line_width=1,
+    hovertemplate="",
+)
 add_pixels(ds, fig)
 
 
@@ -57,26 +61,70 @@ fig_raw = FigureResampler()
 fig_raw.update_layout(autosize=False)
 
 app = Dash(__name__)
-square_style = {'width': '49vw', 'height': '49vw', 'display': 'inline-block'}
+square_style = {"width": "49vw", "height": "49vw", "display": "inline-block"}
+button_style = {"width": "5vw", "padding": 10}
 
-col_indxs = range(ds.dims['x'])
+col_indxs = range(ds.dims["x"])
 app.layout = html.Div(
     [
-        dcc.Dropdown(np.arange(0, ds.dims['x']), 4, id="column_indx"),
-        dcc.Graph(id="raw", figure=fig_raw),
+        dcc.Dropdown(
+            np.arange(0, ds.dims["x"]), 4, id="column_indx", style={"width": "5vw"}
+        ),
+        html.Div(
+            [
+                dcc.Graph(id="raw", figure=fig_raw, style={"width": "90vw"}),
+                html.Div(
+                    [
+                        dcc.Input(
+                            id="norm_width",
+                            type="number",
+                            placeholder="",
+                            value=1000,
+                            style=button_style,
+                        ),
+                        html.Button(
+                            "Apply normalization",
+                            id="apply_norm",
+                            n_clicks=0,
+                            style=button_style,
+                        ),
+                        html.Button(
+                            "Reset dataset", id="reset", n_clicks=0, style=button_style
+                        ),
+                    ],
+                    style={"display": "flex", "flexDirection": "column"},
+                ),
+            ],
+            style={"display": "flex", "flexDirection": "row"},
+        ),
         TraceUpdater(id="trace-updater-raw", gdID="raw"),
-        html.Div([
-            html.Button('Sync', id='sync', n_clicks=0),
-        ]),
-        dcc.Input(id="scale", type="number", placeholder="", value=5e-6, style={'marginRight': '10px'}),
-        html.Div([
-            dcc.Graph(id="quiver", figure=fig, style=square_style),
-            dcc.Graph(id="ccf", figure={}, style=square_style),
-            TraceUpdater(id="trace-updater", gdID="ccf")]),
-        html.Div([
-            dcc.Markdown("""**Selection Data**"""),
-            html.Pre(id='selected_data'),
-        ], className='three columns'),
+        html.Div(
+            [
+                html.Button("Sync", id="sync", n_clicks=0, style=button_style),
+                dcc.Input(
+                    id="scale",
+                    type="number",
+                    placeholder="",
+                    value=5e-6,
+                    style=button_style,
+                ),
+            ],
+            style={"display": "flex", "flexDirection": "row"},
+        ),
+        html.Div(
+            [
+                dcc.Graph(id="quiver", figure=fig, style=square_style),
+                dcc.Graph(id="ccf", figure={}, style=square_style),
+                TraceUpdater(id="trace-updater", gdID="ccf"),
+            ]
+        ),
+        html.Div(
+            [
+                dcc.Markdown("""**Selection Data**"""),
+                html.Pre(id="selected_data"),
+            ],
+            className="three columns",
+        ),
         dcc.Dropdown(["none", "PDF", "PSD"], "none", id="others_plot"),
         dcc.Graph(id="others", figure={}, style=square_style),
     ]
@@ -84,16 +132,40 @@ app.layout = html.Div(
 
 
 @callback(
-    Output('raw', 'figure'),
-    Input('column_indx', 'value')
+    Output("raw", "figure", allow_duplicate=True),
+    Input("apply_norm", "n_clicks"),
+    State("norm_width", "value"),
+    State("column_indx", "value"),
+    prevent_initial_call=True,
 )
+def update_ds(n_clicks, width, col):
+    global ds
+    ds = run_norm_ds(ds, width)
+    return update_output(col)
+
+
+@callback(
+    Output("raw", "figure", allow_duplicate=True),
+    Input("reset", "n_clicks"),
+    State("column_indx", "value"),
+    prevent_initial_call=True,
+)
+def reset_ds(n_clicks, col):
+    global ds
+    ds = xr.open_dataset(filename)
+    return update_output(col)
+
+
+@callback(Output("raw", "figure"), Input("column_indx", "value"))
 def update_output(col):
     fig_raw.data = []
     fig_raw.update_layout(title="Column {}".format(col))
-    for i in range(ds.dims['y']):
+    std = 0
+    for i in range(ds.dims["y"]):
         signal = ds.sel(x=col, y=i)["frames"].values
-        if len(signal) != 0:
-            fig_raw.add_trace(go.Scatter(x=ds["time"].values, y=5 * i + signal))
+        if not is_dead(signal):
+            fig_raw.add_trace(go.Scatter(x=ds["time"].values, y=std + signal))
+            std += signal.std() * 5
     return fig_raw
 
 
@@ -101,19 +173,19 @@ def update_output(col):
     Output("quiver", "figure", allow_duplicate=True),
     Input("scale", "value"),
     Input("sync", "n_clicks"),
-    State('raw', 'figure'),
-    prevent_initial_call=True
+    State("raw", "figure"),
+    prevent_initial_call=True,
 )
 def update_scale(scale, n_clicks, figure):
     t_min, t_max = figure["layout"]["xaxis"]["range"]
-    print("Computing velocity field between times {:.2f} and {:.2f}".format(t_min, t_max))
+    print(
+        "Computing velocity field between times {:.2f} and {:.2f}".format(t_min, t_max)
+    )
     _, _, vx, vy = get_velocity_field(ds, t_min, t_max)
 
-    fig_update = ff.create_quiver(R, Z, vx, vy,
-                     scale=scale,
-                     name='quiver',
-                     line_width=1,
-                     hovertemplate="")
+    fig_update = ff.create_quiver(
+        R, Z, vx, vy, scale=scale, name="quiver", line_width=1, hovertemplate=""
+    )
     add_pixels(ds, fig_update)
     return fig_update
 
@@ -143,14 +215,14 @@ ccf_fig = FigureResampler()
 
 @callback(
     Output("ccf", "figure"),
-    Input('quiver', 'clickData'),
-    State('raw', 'figure'),
-    prevent_initial_call=True
+    Input("quiver", "clickData"),
+    State("raw", "figure"),
+    prevent_initial_call=True,
 )
 def display_hover_data(hd, figure):
     global ccf_fig
     ccf_fig.data = []
-    i, j = [int(s) for s in hd['points'][0]['text'].split(' ')]
+    i, j = [int(s) for s in hd["points"][0]["text"].split(" ")]
     t_min, t_max = figure["layout"]["xaxis"]["range"]
     print("CCF for pixel {} {}, at times {:.2f} {:.2f}".format(i, j, t_min, t_max))
 
@@ -163,12 +235,14 @@ def display_hover_data(hd, figure):
         if is_acf:
             name = "acf"
 
-        ccf_fig.add_trace(go.Scattergl(name=name, visible='legendonly'), hf_x=ccf_times, hf_y=ccf)
+        ccf_fig.add_trace(
+            go.Scattergl(name=name, visible="legendonly"), hf_x=ccf_times, hf_y=ccf
+        )
 
-    plot_trace(i, j, i-1, j)
-    plot_trace(i, j, i+1, j)
-    plot_trace(i, j, i, j-1)
-    plot_trace(i, j, i, j+1)
+    plot_trace(i, j, i - 1, j)
+    plot_trace(i, j, i + 1, j)
+    plot_trace(i, j, i, j - 1)
+    plot_trace(i, j, i, j + 1)
     plot_trace(i, j, i, j)
     return ccf_fig
 
@@ -177,8 +251,8 @@ def display_hover_data(hd, figure):
     Output("others", "figure"),
     Input("others_plot", "value"),
     State("quiver", "selectedData"),
-    State('raw', 'figure'),
-    prevent_initial_call=True
+    State("raw", "figure"),
+    prevent_initial_call=True,
 )
 def plot_others(plot, sd, raw_fig):
     t_min, t_max = raw_fig["layout"]["xaxis"]["range"]
@@ -187,9 +261,11 @@ def plot_others(plot, sd, raw_fig):
     new_fig = go.Figure()
 
     if plot == "PDF":
-        new_fig.update_yaxes(type='log')
+        new_fig.update_yaxes(type="log")
         for pixel in indexes:
-            signal = ds.sel(x=pixel[0], y=pixel[1], time=slice(t_min, t_max))["frames"].values
+            signal = ds.sel(x=pixel[0], y=pixel[1], time=slice(t_min, t_max))[
+                "frames"
+            ].values
             if is_dead(signal):
                 continue
             hist, bin_edges = np.histogram(signal, bins=50, density=True)
@@ -199,14 +275,16 @@ def plot_others(plot, sd, raw_fig):
             new_fig.add_trace(go.Scatter(x=mids, y=hist, name=label))
 
     if plot == "PSD":
-        new_fig.update_yaxes(type='log')
-        new_fig.update_xaxes(type='log')
+        new_fig.update_yaxes(type="log")
+        new_fig.update_xaxes(type="log")
         for pixel in indexes:
-            signal = ds.sel(x=pixel[0], y=pixel[1], time=slice(t_min, t_max))["frames"].values
+            signal = ds.sel(x=pixel[0], y=pixel[1], time=slice(t_min, t_max))[
+                "frames"
+            ].values
             if is_dead(signal):
                 continue
 
-            freq, psd = ss.welch(signal, fs=1/dt, nperseg=10**4)
+            freq, psd = ss.welch(signal, fs=1 / dt, nperseg=10**4)
             freq = 2 * np.pi * freq
 
             label = "{} {}".format(pixel[0], pixel[1])
