@@ -1,32 +1,29 @@
-import json
-
-import numpy as np
 from scipy import signal as ss
 import velocity_estimation as ve
-import xarray as xr
-import h5py
 from utils import *
 from dash import Dash, Input, Output, callback, dcc, html, State
 
-import plotly.express as px
-from plotly.subplots import make_subplots
-import pandas as pd
 from plotly_resampler import FigureResampler
 from trace_updater import TraceUpdater
 
 import plotly.figure_factory as ff
 import plotly.graph_objects as go
 
-shots = {"w7x": "221214013.h5", "11": "1160616011.nc", "16": "1160616016.nc"}
+shots = {"w7x": "221214013.h5", "09": "1160616009.nc", "16": "1160616016.nc"}
+root_path = "/home/sosno/Data/"
 shot = "16"
-# filename = "/home/sosno/Data/221214013.h5"
-filename = "/home/sosno/Data/" + shots[shot]
-rad_pol_filename = np.load("/home/sosno/Data/rz_arrs.npz")
-z_arr, r_arr, pol_arr, rad_arr = rad_pol_positions(rad_pol_filename)
-# ds = create_xarray_from_hdf5(filename, rad_arr, pol_arr)
-ds = xr.open_dataset(filename)
-# ds = ds.sel(time=slice(5, 20))
 dt = 5e-7
+
+
+def open_dataset(shot_number):
+    if shot_number == "w7x":
+        rad_pol_filename = np.load(root_path + "rz_arrs.npz")
+        z_arr, r_arr, pol_arr, rad_arr = rad_pol_positions(rad_pol_filename)
+        return create_xarray_from_hdf5(root_path + shots[shot_number], rad_arr, pol_arr)
+    return xr.open_dataset(root_path + shots[shot_number])
+
+
+ds = open_dataset(shot)
 
 
 def get_velocity_field(data, _t_min, _t_max):
@@ -65,10 +62,26 @@ square_style = {"width": "49vw", "height": "49vw", "display": "inline-block"}
 button_style = {"width": "5vw", "padding": 10}
 
 col_indxs = range(ds.dims["x"])
+column_row = "Column"
 app.layout = html.Div(
     [
-        dcc.Dropdown(
-            np.arange(0, ds.dims["x"]), 4, id="column_indx", style={"width": "5vw"}
+        html.Div(
+            [
+                dcc.Markdown("""**Shot**"""),
+                dcc.Dropdown(list(shots.keys()), shot, id="shot", style=button_style),
+            ],
+            style={"display": "flex", "flexDirection": "row"},
+        ),
+        html.Div(
+            [
+                dcc.Dropdown(
+                    ["Column", "Row"], column_row, id="column_row", style=button_style
+                ),
+                dcc.Dropdown(
+                    np.arange(0, ds.dims["x"]), 4, id="column_indx", style=button_style
+                ),
+            ],
+            style={"display": "flex", "flexDirection": "row"},
         ),
         html.Div(
             [
@@ -78,7 +91,7 @@ app.layout = html.Div(
                         dcc.Input(
                             id="norm_width",
                             type="number",
-                            placeholder="",
+                            placeholder="norm width",
                             value=1000,
                             style=button_style,
                         ),
@@ -104,7 +117,7 @@ app.layout = html.Div(
                 dcc.Input(
                     id="scale",
                     type="number",
-                    placeholder="",
+                    placeholder="scale",
                     value=5e-6,
                     style=button_style,
                 ),
@@ -127,8 +140,21 @@ app.layout = html.Div(
         ),
         dcc.Dropdown(["none", "PDF", "PSD"], "none", id="others_plot"),
         dcc.Graph(id="others", figure={}, style=square_style),
+        html.Div(id="null", style={"display": "none"}),
     ]
 )
+
+
+@callback(
+    Output("raw", "figure", allow_duplicate=True),
+    Input("shot", "value"),
+    State("column_indx", "value"),
+    prevent_initial_call=True,
+)
+def update_shot(value, col):
+    global ds
+    ds = open_dataset(value)
+    return update_output(col)
 
 
 @callback(
@@ -148,21 +174,37 @@ def update_ds(n_clicks, width, col):
     Output("raw", "figure", allow_duplicate=True),
     Input("reset", "n_clicks"),
     State("column_indx", "value"),
+    State("shot", "value"),
     prevent_initial_call=True,
 )
-def reset_ds(n_clicks, col):
+def reset_ds(n_clicks, col, shot_nm):
     global ds
-    ds = xr.open_dataset(filename)
+    ds = open_dataset(shots[shot_nm])
     return update_output(col)
 
 
-@callback(Output("raw", "figure"), Input("column_indx", "value"))
+@callback(Output("null", "n_clicks"), Input("column_row", "value"))
+def update_column_row(value):
+    global column_row
+    column_row = value
+    return None
+
+
+@callback(
+    Output("raw", "figure"),
+    Input("column_indx", "value"),
+)
 def update_output(col):
+    plot_col = column_row == "Column"
     fig_raw.data = []
-    fig_raw.update_layout(title="Column {}".format(col))
+    fig_raw.update_layout(title="{} {}".format(column_row, col))
     std = 0
-    for i in range(ds.dims["y"]):
-        signal = ds.sel(x=col, y=i)["frames"].values
+    for i in range(ds.dims["y" if plot_col else "x"]):
+        signal = (
+            ds.sel(x=col, y=i)["frames"].values
+            if plot_col
+            else ds.sel(x=i, y=col)["frames"].values
+        )
         if not is_dead(signal):
             fig_raw.add_trace(go.Scatter(x=ds["time"].values, y=std + signal))
             std += signal.std() * 5
@@ -181,7 +223,7 @@ def update_scale(scale, n_clicks, figure):
     print(
         "Computing velocity field between times {:.2f} and {:.2f}".format(t_min, t_max)
     )
-    _, _, vx, vy = get_velocity_field(ds, t_min, t_max)
+    R, Z, vx, vy = get_velocity_field(ds, t_min, t_max)
 
     fig_update = ff.create_quiver(
         R, Z, vx, vy, scale=scale, name="quiver", line_width=1, hovertemplate=""
@@ -226,8 +268,10 @@ def display_hover_data(hd, figure):
     t_min, t_max = figure["layout"]["xaxis"]["range"]
     print("CCF for pixel {} {}, at times {:.2f} {:.2f}".format(i, j, t_min, t_max))
 
-    def plot_trace(x1, y1, x2, y2):
-        name = "{} {}".format(x2, y2)
+    def plot_trace(x1, y1, x2, y2, name):
+        if not is_within_boundaries(ds, x2, y2):
+            return
+        # name = "{} {}".format(x2, y2)
         s1 = ds.sel(x=x1, y=y1, time=slice(t_min, t_max))["frames"].values
         s2 = ds.sel(x=x2, y=y2, time=slice(t_min, t_max))["frames"].values
         ccf_times, ccf = fppa.corr_fun(s1, s2, 5e-7)
@@ -239,11 +283,11 @@ def display_hover_data(hd, figure):
             go.Scattergl(name=name, visible="legendonly"), hf_x=ccf_times, hf_y=ccf
         )
 
-    plot_trace(i, j, i - 1, j)
-    plot_trace(i, j, i + 1, j)
-    plot_trace(i, j, i, j - 1)
-    plot_trace(i, j, i, j + 1)
-    plot_trace(i, j, i, j)
+    plot_trace(i, j, i - 1, j, "left")
+    plot_trace(i, j, i + 1, j, "right")
+    plot_trace(i, j, i, j - 1, "down")
+    plot_trace(i, j, i, j + 1, "up")
+    plot_trace(i, j, i, j, "self")
     return ccf_fig
 
 
