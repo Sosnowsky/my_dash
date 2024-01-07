@@ -8,6 +8,7 @@ from trace_updater import TraceUpdater
 
 import plotly.figure_factory as ff
 import plotly.graph_objects as go
+import plotly.express as px
 
 shots = {"w7x": "221214013.h5", "09": "1160616009.nc", "16": "1160616016.nc"}
 root_path = "/home/sosno/Data/"
@@ -138,8 +139,11 @@ app.layout = html.Div(
             ],
             className="three columns",
         ),
-        dcc.Dropdown(["none", "PDF", "PSD"], "none", id="others_plot"),
-        dcc.Graph(id="others", figure={}, style=square_style),
+        html.Div([
+            dcc.Dropdown(["none", "PDF", "PSD"], "none", id="others_plot"),
+            dcc.Graph(id="others", figure={}, style=square_style),
+            dcc.Dropdown(["gamma", "none"], "none", id="others_fit")
+        ]),
         html.Div(id="null", style={"display": "none"}),
     ]
 )
@@ -179,7 +183,7 @@ def update_ds(n_clicks, width, col):
 )
 def reset_ds(n_clicks, col, shot_nm):
     global ds
-    ds = open_dataset(shots[shot_nm])
+    ds = open_dataset(shot_nm)
     return update_output(col)
 
 
@@ -292,7 +296,7 @@ def display_hover_data(hd, figure):
 
 
 @callback(
-    Output("others", "figure"),
+    Output("others", "figure", allow_duplicate=True),
     Input("others_plot", "value"),
     State("quiver", "selectedData"),
     State("raw", "figure"),
@@ -303,38 +307,48 @@ def plot_others(plot, sd, raw_fig):
     texts = [p["text"] for p in sd["points"]]
     indexes = np.array(list(map(lambda t: [int(s) for s in t.split(" ")], texts)))
     new_fig = go.Figure()
+    colors = px.colors.qualitative.Dark24
 
-    if plot == "PDF":
-        new_fig.update_yaxes(type="log")
-        for pixel in indexes:
-            signal = ds.sel(x=pixel[0], y=pixel[1], time=slice(t_min, t_max))[
-                "frames"
-            ].values
-            if is_dead(signal):
-                continue
+    new_fig.update_yaxes(type="log")
+    if plot == "PSD":
+        new_fig.update_xaxes(type="log")
+    for i in range(len(indexes)):
+        pixel = indexes[i]
+        signal = ds.sel(x=pixel[0], y=pixel[1], time=slice(t_min, t_max))[
+            "frames"
+        ].values
+        if is_dead(signal):
+            continue
+        label = "{} {}".format(pixel[0], pixel[1])
+        if plot == "PDF":
             hist, bin_edges = np.histogram(signal, bins=50, density=True)
             mids = (bin_edges[:-1] + bin_edges[1:]) / 2
-
-            label = "{} {}".format(pixel[0], pixel[1])
-            new_fig.add_trace(go.Scatter(x=mids, y=hist, name=label))
-
-    if plot == "PSD":
-        new_fig.update_yaxes(type="log")
-        new_fig.update_xaxes(type="log")
-        for pixel in indexes:
-            signal = ds.sel(x=pixel[0], y=pixel[1], time=slice(t_min, t_max))[
-                "frames"
-            ].values
-            if is_dead(signal):
-                continue
-
+            new_fig.add_trace(go.Scatter(x=mids, y=hist, name=label, line=dict(color=colors[i])))
+        if plot == "PSD":
             freq, psd = ss.welch(signal, fs=1 / dt, nperseg=10**4)
             freq = 2 * np.pi * freq
-
-            label = "{} {}".format(pixel[0], pixel[1])
-            new_fig.add_trace(go.Scatter(x=freq, y=psd, name=label))
+            new_fig.add_trace(go.Scatter(x=freq, y=psd, name=label, line=dict(color=colors[i])))
 
     return new_fig
+
+
+@callback(
+    Output("others", "figure", allow_duplicate=True),
+    Input("others_fit", "value"),
+    State("others", "figure"),
+    prevent_initial_call=True,
+)
+def others_fit(value, figure):
+    from scipy.optimize import curve_fit
+    from scipy.special import gamma
+    new_figure = go.Figure(figure)
+    def gamma_func(x, s, mean, c):
+        return c + s / gamma(s) * (s*x/mean) ** (s - 1) * np.exp(-s*x/mean)
+    for data in figure["data"]:
+        x, y = np.array(data["x"]), np.array(data["y"])
+        fit, _ = curve_fit(gamma_func, x, y, p0=[2, 1, 0])
+        new_figure.add_trace(go.Scatter(x=x, y=gamma_func(x, fit[0], fit[1], fit[2]), name=data["name"] + str(fit[0]), line=dict(color=data["line"]["color"], dash="dash")))
+    return new_figure
 
 
 ccf_fig.register_update_graph_callback(
