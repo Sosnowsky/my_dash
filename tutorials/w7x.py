@@ -2,6 +2,7 @@ from scipy import signal as ss
 import velocity_estimation as ve
 from utils import *
 from dash import Dash, Input, Output, callback, dcc, html, State
+from fppanalysis import kf_spectra
 
 from plotly_resampler import FigureResampler
 from trace_updater import TraceUpdater
@@ -10,18 +11,31 @@ import plotly.figure_factory as ff
 import plotly.graph_objects as go
 import plotly.express as px
 
-shots = {"w7x": "221214013.h5", "09": "1160616009.nc", "16": "1160616016.nc"}
+shots = {
+    "w7x": "221214013.h5",
+    "09": "1160616009.nc",
+    "16": "1160616016.nc",
+    "1091008020": "1091008020.nc",
+    "1100803007": "1100803007.nc",
+}
 root_path = "/home/sosno/Data/"
 shot = "16"
 dt = 5e-7
 
 
 def open_dataset(shot_number):
+    global ds
     if shot_number == "w7x":
         rad_pol_filename = np.load(root_path + "rz_arrs.npz")
         z_arr, r_arr, pol_arr, rad_arr = rad_pol_positions(rad_pol_filename)
         return create_xarray_from_hdf5(root_path + shots[shot_number], rad_arr, pol_arr)
-    return xr.open_dataset(root_path + shots[shot_number])
+
+    ds = xr.open_dataset(root_path + shots[shot_number])
+    for y in range(ds.dims["y"]):
+        for x in range(ds.dims["x"]):
+            if ds.sel(x=x, y=y)["frames"].values.std() < 0.005:
+                ds['frames'].loc[dict(y=y, x=x)] = np.nan
+    return ds
 
 
 ds = open_dataset(shot)
@@ -139,11 +153,51 @@ app.layout = html.Div(
             ],
             className="three columns",
         ),
-        html.Div([
-            dcc.Dropdown(["none", "PDF", "PSD"], "none", id="others_plot"),
-            dcc.Graph(id="others", figure={}, style=square_style),
-            dcc.Dropdown(["gamma", "none"], "none", id="others_fit")
-        ]),
+        html.Div(
+            [
+                html.Div(
+                    [
+                        dcc.Dropdown(
+                            ["none", "PDF", "PSD"],
+                            "none",
+                            id="others_plot",
+                            style=button_style,
+                        ),
+                        dcc.Graph(id="others", figure={}, style=square_style),
+                        dcc.Dropdown(
+                            ["gamma", "none"],
+                            "none",
+                            id="others_fit",
+                            style=button_style,
+                        ),
+                    ]
+                ),
+                html.Div(
+                    [
+                        html.Div(
+                            [
+                                dcc.Dropdown(
+                                    ["Column", "Row"],
+                                    column_row,
+                                    id="column_row_2",
+                                    style=button_style,
+                                ),
+                                dcc.Dropdown(
+                                    np.arange(0, ds.dims["x"]),
+                                    4,
+                                    id="col_indx_2",
+                                    style=button_style,
+                                ),
+                            ],
+                            style={"display": "flex", "flexDirection": "row"},
+                        ),
+                        dcc.Graph(id="col_row_plots", figure={}, style=square_style),
+                    ],
+                    style={"display": "flex", "flexDirection": "column"},
+                ),
+            ],
+            style={"display": "flex", "flexDirection": "row"},
+        ),
         html.Div(id="null", style={"display": "none"}),
     ]
 )
@@ -323,11 +377,15 @@ def plot_others(plot, sd, raw_fig):
         if plot == "PDF":
             hist, bin_edges = np.histogram(signal, bins=50, density=True)
             mids = (bin_edges[:-1] + bin_edges[1:]) / 2
-            new_fig.add_trace(go.Scatter(x=mids, y=hist, name=label, line=dict(color=colors[i])))
+            new_fig.add_trace(
+                go.Scatter(x=mids, y=hist, name=label, line=dict(color=colors[i]))
+            )
         if plot == "PSD":
             freq, psd = ss.welch(signal, fs=1 / dt, nperseg=10**4)
             freq = 2 * np.pi * freq
-            new_fig.add_trace(go.Scatter(x=freq, y=psd, name=label, line=dict(color=colors[i])))
+            new_fig.add_trace(
+                go.Scatter(x=freq, y=psd, name=label, line=dict(color=colors[i]))
+            )
 
     return new_fig
 
@@ -341,14 +399,36 @@ def plot_others(plot, sd, raw_fig):
 def others_fit(value, figure):
     from scipy.optimize import curve_fit
     from scipy.special import gamma
+
     new_figure = go.Figure(figure)
+
     def gamma_func(x, s, mean, c):
-        return c + s / gamma(s) * (s*x/mean) ** (s - 1) * np.exp(-s*x/mean)
+        return c + s / gamma(s) * (s * x / mean) ** (s - 1) * np.exp(-s * x / mean)
+
     for data in figure["data"]:
         x, y = np.array(data["x"]), np.array(data["y"])
         fit, _ = curve_fit(gamma_func, x, y, p0=[2, 1, 0])
-        new_figure.add_trace(go.Scatter(x=x, y=gamma_func(x, fit[0], fit[1], fit[2]), name=data["name"] + str(fit[0]), line=dict(color=data["line"]["color"], dash="dash")))
+        new_figure.add_trace(
+            go.Scatter(
+                x=x,
+                y=gamma_func(x, fit[0], fit[1], fit[2]),
+                name=data["name"] + str(fit[0]),
+                line=dict(color=data["line"]["color"], dash="dash"),
+            )
+        )
     return new_figure
+
+
+# This should also work for rows, but so far I implement it only for cols.
+@callback(Output("col_row_plots", "figure"), Input("col_indx_2", "value"))
+def update_col_row_plot(col):
+    k, freqs, s = kf_spectra.get_kf_spectra_for_column(ds, col)
+    density = xr.DataArray(data=s, coords=dict(k=k, freqs=freqs))
+
+    dens_coars = density.coarsen(k=1, freqs=1000, boundary="pad").mean()
+
+    col_row_fig = px.imshow(dens_coars.sel(freqs=slice(0, 300 * 1000)), zmax=0.5, aspect="auto", color_continuous_scale="RdBu_r")
+    return col_row_fig
 
 
 ccf_fig.register_update_graph_callback(
