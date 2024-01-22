@@ -5,7 +5,6 @@ from dash import Dash, Input, Output, callback, dcc, html, State
 from fppanalysis import kf_spectra
 
 from plotly_resampler import FigureResampler
-from trace_updater import TraceUpdater
 
 import plotly.figure_factory as ff
 import plotly.graph_objects as go
@@ -34,7 +33,7 @@ def open_dataset(shot_number):
     for y in range(ds.dims["y"]):
         for x in range(ds.dims["x"]):
             if ds.sel(x=x, y=y)["frames"].values.std() < 0.005:
-                ds['frames'].loc[dict(y=y, x=x)] = np.nan
+                ds["frames"].loc[dict(y=y, x=x)] = np.nan
     return ds
 
 
@@ -125,7 +124,6 @@ app.layout = html.Div(
             ],
             style={"display": "flex", "flexDirection": "row"},
         ),
-        TraceUpdater(id="trace-updater-raw", gdID="raw"),
         html.Div(
             [
                 html.Button("Sync", id="sync", n_clicks=0, style=button_style),
@@ -143,7 +141,6 @@ app.layout = html.Div(
             [
                 dcc.Graph(id="quiver", figure=fig, style=square_style),
                 dcc.Graph(id="ccf", figure={}, style=square_style),
-                TraceUpdater(id="trace-updater", gdID="ccf"),
             ]
         ),
         html.Div(
@@ -427,17 +424,18 @@ def update_col_row_plot(col):
 
     dens_coars = density.coarsen(k=1, freqs=1000, boundary="pad").mean()
 
-    col_row_fig = px.imshow(dens_coars.sel(freqs=slice(0, 300 * 1000)), zmax=0.5, aspect="auto", color_continuous_scale="RdBu_r")
+    col_row_fig = px.imshow(
+        dens_coars.sel(freqs=slice(0, 300 * 1000)),
+        zmax=0.5,
+        aspect="auto",
+        color_continuous_scale="RdBu_r",
+    )
     return col_row_fig
 
 
-ccf_fig.register_update_graph_callback(
-    app=app, graph_id="ccf", trace_updater_id="trace-updater"
-)
+ccf_fig.register_update_graph_callback(app=app, graph_id="ccf")
 
-fig_raw.register_update_graph_callback(
-    app=app, graph_id="raw", trace_updater_id="trace-updater-raw"
-)
+fig_raw.register_update_graph_callback(app=app, graph_id="raw")
 
 if __name__ == "__main__":
     app.run(debug=True)
